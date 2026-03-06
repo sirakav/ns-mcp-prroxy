@@ -10,7 +10,7 @@ Usage:
   uvx --from git+https://github.com/sirakav/ns-mcp-proxy \\
       nordstellar-remote-mcp-proxy <remote_mcp_url>
 
-  e.g.  nordstellar-remote-mcp-proxy https://my-server:8080/mcp
+  e.g.  nordstellar-remote-mcp-proxy https://platform-mcp.nordstellar.com/mcp
 
 Cursor mcp.json:
   "nordstellar-graphql": {
@@ -18,7 +18,7 @@ Cursor mcp.json:
     "args": [
       "--from", "git+https://github.com/sirakav/ns-mcp-proxy",
       "nordstellar-remote-mcp-proxy",
-      "https://my-server:8080/mcp"
+      "https://platform-mcp.nordstellar.com/mcp"
     ]
   }
 """
