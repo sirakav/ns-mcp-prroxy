@@ -44,7 +44,7 @@ from mcp import server, types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.stdio import stdio_server
-from mcp.shared.exceptions import MCPError
+from mcp.shared.exceptions import McpError
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -564,7 +564,7 @@ def _is_auth_exception(exc: BaseException) -> bool:
     """
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
         return True
-    if isinstance(exc, MCPError) and exc.message == "Session terminated":
+    if isinstance(exc, McpError) and exc.message == "Session terminated":
         return True
     if isinstance(exc, RuntimeError) and exc.args in (
         ("AUTH_NOT_AUTHENTICATED",),
