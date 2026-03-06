@@ -439,7 +439,14 @@ class ConnectionManager:
 
     def _ensure_owner_task(self) -> None:
         if self._owner_task is not None and self._owner_task.done():
-            self._owner_task.result()
+            # Discard any stored exception — the owner exited due to a transport
+            # failure (e.g. TaskGroup from streamablehttp_client) and a fresh task
+            # must be created so connect() can succeed.  Re-raising here would
+            # prevent reconnection after a 401.
+            try:
+                self._owner_task.result()
+            except (Exception, asyncio.CancelledError) as exc:
+                log.warning("Connection owner task exited: %s", exc)
             self._owner_task = None
         if self._owner_task is None:
             self._owner_task = asyncio.create_task(
@@ -514,11 +521,28 @@ def _is_auth_error(result: types.CallToolResult) -> bool:
 # ---------------------------------------------------------------------------
 
 
-_AUTH_KEYWORDS = ("401", "unauthorized", "unauthenticated", "expired", "forbidden")
+_AUTH_KEYWORDS = (
+    "401",
+    "unauthorized",
+    "unauthenticated",
+    "expired",
+    "forbidden",
+    # Raised by ConnectionManager.session when the owner task exited after a
+    # transport failure (e.g. the streamablehttp_client TaskGroup died on 401).
+    "not connected",
+)
 
 
-def _looks_like_auth_error(exc: Exception) -> bool:
-    return any(kw in str(exc).lower() for kw in _AUTH_KEYWORDS)
+def _looks_like_auth_error(exc: BaseException) -> bool:
+    if any(kw in str(exc).lower() for kw in _AUTH_KEYWORDS):
+        return True
+    # Recurse into sub-exceptions: asyncio.TaskGroup (Python 3.11+) and
+    # anyio wrap failures as ExceptionGroup whose top-level message is
+    # "unhandled errors in a TaskGroup" — no auth keywords at the top level.
+    subs = getattr(exc, "exceptions", None)
+    if subs is not None:
+        return any(_looks_like_auth_error(sub) for sub in subs)
+    return False
 
 
 async def _create_proxy_server(
@@ -572,7 +596,7 @@ async def _create_proxy_server(
     if caps and caps.tools:
 
         async def _list_tools(_: Any) -> types.ServerResult:
-            return types.ServerResult(await _with_reauth(conn.session.list_tools))
+            return types.ServerResult(await _with_reauth(lambda: conn.session.list_tools()))
 
         async def _call_tool(req: types.CallToolRequest) -> types.ServerResult:
             async def _do() -> types.CallToolResult:
@@ -606,11 +630,11 @@ async def _create_proxy_server(
     if caps and caps.resources:
 
         async def _list_resources(_: Any) -> types.ServerResult:
-            return types.ServerResult(await _with_reauth(conn.session.list_resources))
+            return types.ServerResult(await _with_reauth(lambda: conn.session.list_resources()))
 
         async def _list_resource_templates(_: Any) -> types.ServerResult:
             return types.ServerResult(
-                await _with_reauth(conn.session.list_resource_templates)
+                await _with_reauth(lambda: conn.session.list_resource_templates())
             )
 
         async def _read_resource(req: types.ReadResourceRequest) -> types.ServerResult:
@@ -630,7 +654,7 @@ async def _create_proxy_server(
     if caps and caps.prompts:
 
         async def _list_prompts(_: Any) -> types.ServerResult:
-            return types.ServerResult(await _with_reauth(conn.session.list_prompts))
+            return types.ServerResult(await _with_reauth(lambda: conn.session.list_prompts()))
 
         async def _get_prompt(req: types.GetPromptRequest) -> types.ServerResult:
             return types.ServerResult(
