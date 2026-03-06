@@ -44,6 +44,7 @@ from mcp import server, types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.stdio import stdio_server
+from mcp.shared.exceptions import MCPError
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -534,20 +535,26 @@ def _is_auth_error(result: types.CallToolResult) -> bool:
 
 def _is_auth_exception(exc: BaseException) -> bool:
     """
-    Return True if exc indicates the remote MCP server rejected the Bearer token.
+    Return True if exc indicates the remote MCP server rejected the Bearer token
+    or that the remote session has been terminated and reconnection is needed.
 
-    Three precise cases are recognised:
+    Four precise cases are recognised:
 
     1. httpx.HTTPStatusError with status 401 — the streamablehttp_client (which
        uses httpx) raises this when the remote Go server returns HTTP 401 for any
        auth failure (missing token, invalid JWT, expired token, backend rejection).
 
-    2. RuntimeError("AUTH_NOT_AUTHENTICATED") — raised by _call_tool's _do()
+    2. MCPError("Session terminated") — the streamablehttp_client converts a 404
+       response from the remote into MCPError(code=INVALID_REQUEST, message=
+       "Session terminated") sent through the read stream. This happens when the
+       remote server's session has expired or restarted.
+
+    3. RuntimeError("AUTH_NOT_AUTHENTICATED") — raised by _call_tool's _do()
        when the Go tool returns an AUTH_NOT_AUTHENTICATED sentinel in its content
        (HTTP 200). This happens within the tokenauth cache window when the backend
        rejects the token mid-request after tokenauth has already accepted it.
 
-    3. RuntimeError("Not connected to remote MCP server") — raised by
+    4. RuntimeError("Not connected to remote MCP server") — raised by
        ConnectionManager.session when _session is None, which happens after the
        connection owner task exits because the streamablehttp_client TaskGroup
        crashed on a 401.
@@ -556,6 +563,8 @@ def _is_auth_exception(exc: BaseException) -> bool:
     transport failures in a group whose top-level message contains no auth signal.
     """
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+        return True
+    if isinstance(exc, MCPError) and exc.message == "Session terminated":
         return True
     if isinstance(exc, RuntimeError) and exc.args in (
         ("AUTH_NOT_AUTHENTICATED",),
@@ -583,12 +592,12 @@ async def _create_proxy_server(
     app: server.Server = server.Server(name=conn.server_name)
 
     async def _reauth_and_reconnect() -> None:
-        log.info("Auth error detected — re-authenticating...")
+        log.info("Auth/session error detected — re-authenticating and reconnecting...")
         auth.invalidate()
         await auth.ensure_authenticated()
         jwt = auth.extract_jwt()
         await conn.connect(url, jwt)
-        log.info("Reconnected with new token.")
+        log.info("Reconnected with refreshed token.")
 
     async def _with_reauth(coro_factory: "Callable[[], Awaitable[T]]") -> T:
         """
