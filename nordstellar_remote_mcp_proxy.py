@@ -664,12 +664,17 @@ async def _create_proxy_server(
                 return types.ServerResult(await _with_reauth(_do))
             except Exception as exc:  # noqa: BLE001
                 log.warning("call_tool(%s) failed: %s: %s", req.params.name, type(exc).__name__, exc)
+                # Forward the remote server's error message (e.g. blocked delete operations)
+                # instead of a generic message so the client sees the actual reason.
+                error_text = str(exc).strip()
+                if not error_text:
+                    error_text = "Tool call failed. Please try again or restart the MCP server."
                 return types.ServerResult(
                     types.CallToolResult(
                         content=[
                             types.TextContent(
                                 type="text",
-                                text="Tool call failed. Please try again or restart the MCP server.",
+                                text=error_text,
                             )
                         ],
                         isError=True,
