@@ -30,9 +30,11 @@ import sys
 import urllib.parse
 import webbrowser
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
 import httpx
+from jinja2 import Environment, FileSystemLoader
 from mcp import server, types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -49,15 +51,10 @@ BACKEND_BASE = "https://platform-api.nordstellar.com"
 CALLBACK_PORT = 54321
 CALLBACK_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
 
-_SUCCESS_HTML = (
-    "<!DOCTYPE html><html><head><title>Login successful</title>"
-    "<script>setTimeout(function(){ window.close(); }, 1500);</script></head>"
-    "<body><h1>Login successful</h1>"
-    "<p>This tab will close automatically.</p></body></html>"
-)
-_ERROR_HTML = (
-    "<!DOCTYPE html><html><head><title>Login failed</title></head>"
-    "<body><h1>Login failed</h1><p>{message}</p></body></html>"
+_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+_JINJA_ENV = Environment(
+    loader=FileSystemLoader(_TEMPLATES_DIR),
+    autoescape=True,
 )
 
 
@@ -122,12 +119,12 @@ class AuthState:
 
                 if "error" in params:
                     desc = params.get("error_description", "")
-                    body = _ERROR_HTML.format(
+                    body = _JINJA_ENV.get_template("login-error.html").render(
                         message=f"{params['error']}: {desc}"
                     ).encode()
                     await result_queue.put({"error": params["error"]})
                 else:
-                    body = _SUCCESS_HTML.encode()
+                    body = _JINJA_ENV.get_template("login-success.html").render().encode()
                     await result_queue.put(
                         {"code": params.get("code", ""), "state": params.get("state", "")}
                     )

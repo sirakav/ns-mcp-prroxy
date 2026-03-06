@@ -10,10 +10,11 @@ requires-python = ">=3.10"
 dependencies = [
   "mcp>=1.6.0",
   "httpx>=0.27.0",
+  "jinja2>=3.1.0",
 ]
 
 [project.scripts]
 nordstellar-remote-mcp-proxy = "nordstellar_remote_mcp_proxy:main"
 
 [tool.hatch.build]
-include = ["nordstellar_remote_mcp_proxy.py"]
+include = ["nordstellar_remote_mcp_proxy.py", "templates"]
