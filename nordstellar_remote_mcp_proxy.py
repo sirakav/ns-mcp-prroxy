@@ -536,13 +536,18 @@ def _is_auth_exception(exc: BaseException) -> bool:
     """
     Return True if exc indicates the remote MCP server rejected the Bearer token.
 
-    Two precise cases are recognised:
+    Three precise cases are recognised:
 
     1. httpx.HTTPStatusError with status 401 — the streamablehttp_client (which
        uses httpx) raises this when the remote Go server returns HTTP 401 for any
        auth failure (missing token, invalid JWT, expired token, backend rejection).
 
-    2. RuntimeError("Not connected to remote MCP server") — raised by
+    2. RuntimeError("AUTH_NOT_AUTHENTICATED") — raised by _call_tool's _do()
+       when the Go tool returns an AUTH_NOT_AUTHENTICATED sentinel in its content
+       (HTTP 200). This happens within the tokenauth cache window when the backend
+       rejects the token mid-request after tokenauth has already accepted it.
+
+    3. RuntimeError("Not connected to remote MCP server") — raised by
        ConnectionManager.session when _session is None, which happens after the
        connection owner task exits because the streamablehttp_client TaskGroup
        crashed on a 401.
@@ -552,9 +557,9 @@ def _is_auth_exception(exc: BaseException) -> bool:
     """
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
         return True
-    if (
-        isinstance(exc, RuntimeError)
-        and exc.args == ("Not connected to remote MCP server",)
+    if isinstance(exc, RuntimeError) and exc.args in (
+        ("AUTH_NOT_AUTHENTICATED",),
+        ("Not connected to remote MCP server",),
     ):
         return True
     subs = getattr(exc, "exceptions", None)
