@@ -7,7 +7,7 @@ using that JWT as a Bearer token.  Re-authenticates transparently when the
 token expires.
 
 Usage:
-  uvx --from git+https://github.com/sirakav/nordstellar-remote-mcp-proxy \\
+  uvx --from git+https://github.com/sirakav/ns-mcp-prroxy \\
       nordstellar-remote-mcp-proxy <remote_mcp_url>
 
   e.g.  nordstellar-remote-mcp-proxy http://my-server:8080/mcp
@@ -16,7 +16,7 @@ Cursor mcp.json:
   "nordstellar-graphql": {
     "command": "uvx",
     "args": [
-      "--from", "git+https://github.com/sirakav/nordstellar-remote-mcp-proxy",
+      "--from", "git+https://github.com/sirakav/ns-mcp-prroxy",
       "nordstellar-remote-mcp-proxy",
       "http://my-server:8080/mcp"
     ]
