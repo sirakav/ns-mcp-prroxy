@@ -270,6 +270,10 @@ class AuthState:
             )
         print("NordStellar: Login successful.", file=sys.stderr)
 
+    def invalidate(self) -> None:
+        """Remove the AccessToken cookie so the next ensure_authenticated call is forced to refresh."""
+        self._client.cookies.delete("AccessToken")
+
     async def ensure_authenticated(self) -> None:
         """Refresh or run browser login, mirroring ensureAuthenticated in refresh.go."""
         if self.is_authenticated():
@@ -522,6 +526,7 @@ async def _create_proxy_server(
 
     async def _reauth_and_reconnect() -> None:
         log.info("Auth error detected — re-authenticating...")
+        auth.invalidate()
         await auth.ensure_authenticated()
         jwt = auth.extract_jwt()
         await conn.connect(url, jwt)
