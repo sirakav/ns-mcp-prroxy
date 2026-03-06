@@ -21,13 +21,13 @@ Add the NordStellar MCP server to your AI assistant’s MCP configuration (e.g. 
     "args": [
       "--from", "git+https://github.com/sirakav/ns-mcp-proxy",
       "nordstellar-remote-mcp-proxy",
-      "http://your-server:8080/mcp"
+      "https://platform-mcp.nordstellar.com/mcp"
     ]
   }
 }
 ```
 
-Replace `http://your-server:8080/mcp` with the MCP endpoint URL provided by your NordStellar administrator.
+The default endpoint is `https://platform-mcp.nordstellar.com/mcp`. Contact your NordStellar administrator if you need a different URL.
 
 ### 2. First-time login
 
