@@ -24,8 +24,10 @@ Cursor mcp.json:
 """
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
+import secrets
 import sys
 import urllib.parse
 import webbrowser
@@ -48,8 +50,16 @@ logging.basicConfig(
 log = logging.getLogger("nordstellar-proxy")
 
 BACKEND_BASE = "https://platform-api.nordstellar.com"
-CALLBACK_PORT = 54321
-CALLBACK_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
+
+
+def _callback_uri(port: int) -> str:
+    return f"http://127.0.0.1:{port}/callback"
+
+
+def _oauth_state_from_auth_url(auth_url: str) -> str:
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(auth_url).query)
+    states = params.get("state", [])
+    return states[0] if states else ""
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _JINJA_ENV = Environment(
@@ -96,7 +106,7 @@ class AuthState:
     async def _login_flow(self) -> None:
         """
         Full browser OAuth flow, mirroring login.go:
-          1. Bind local callback server on 127.0.0.1:54321
+          1. Bind local callback server on a random loopback port
           2. GET /auth/initiate-login/{encoded_redirect} (no redirects)
           3. Open Keycloak URL in the browser
           4. Receive OAuth callback (code + state)
@@ -139,9 +149,15 @@ class AuthState:
             finally:
                 writer.close()
 
-        cb_server = await asyncio.start_server(_handle_connection, "127.0.0.1", CALLBACK_PORT)
+        cb_server = await asyncio.start_server(_handle_connection, "127.0.0.1", 0)
         try:
-            encoded = urllib.parse.quote(CALLBACK_URI, safe="")
+            sockets: list[Any] = list(cb_server.sockets or [])
+            if not sockets:
+                raise RuntimeError("callback server did not expose a bound socket")
+            callback_port = sockets[0].getsockname()[1]
+            callback_uri = _callback_uri(callback_port)
+
+            encoded = urllib.parse.quote(callback_uri, safe="")
             init_resp = await self._client.get(
                 f"{BACKEND_BASE}/auth/initiate-login/{encoded}",
                 headers={"Accept": "application/json"},
@@ -164,22 +180,33 @@ class AuthState:
                     f"initiate-login failed (HTTP {init_resp.status_code}): {init_resp.text}"
                 )
 
+            expected_state = _oauth_state_from_auth_url(auth_url)
+            if not expected_state:
+                raise RuntimeError("initiate-login response did not include OAuth state")
+
             print("NordStellar: Opening browser for login...", file=sys.stderr)
             webbrowser.open(auth_url)
 
             result = await asyncio.wait_for(result_queue.get(), timeout=300)
         finally:
             cb_server.close()
+            await cb_server.wait_closed()
 
         if "error" in result:
             raise RuntimeError(f"OAuth callback error: {result['error']}")
+        if not result.get("code"):
+            raise RuntimeError("OAuth callback missing authorization code")
+        if not result.get("state"):
+            raise RuntimeError("OAuth callback missing state")
+        if not secrets.compare_digest(result["state"], expected_state):
+            raise RuntimeError("OAuth callback state mismatch")
 
         login_resp = await self._client.post(
             f"{BACKEND_BASE}/auth/login",
             json={
                 "authorization_code": result["code"],
                 "state": result["state"],
-                "redirect_uri": CALLBACK_URI,
+                "redirect_uri": callback_uri,
             },
         )
         if login_resp.status_code != 200:
@@ -242,48 +269,157 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._session: ClientSession | None = None
-        self._stack: AsyncExitStack | None = None
         self.server_name: str = "nordstellar-graphql"
         self.capabilities: types.ServerCapabilities | None = None
+        self._commands: asyncio.Queue[_ConnectionCommand] = asyncio.Queue()
+        self._owner_task: asyncio.Task[None] | None = None
+
+    async def _open_connection(
+        self, url: str, jwt: str
+    ) -> tuple[AsyncExitStack, ClientSession, Any]:
+        stack = AsyncExitStack()
+        try:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(
+                    url=url,
+                    headers={"Authorization": f"Bearer {jwt}"},
+                )
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            init_result = await session.initialize()
+        except Exception:
+            await stack.aclose()
+            raise
+        return stack, session, init_result
+
+    @staticmethod
+    async def _close_stack(stack: AsyncExitStack, context: str) -> None:
+        try:
+            await stack.aclose()
+        except Exception as exc:
+            raise RuntimeError(f"{context}: {exc}") from exc
+
+    @staticmethod
+    def _finish_command(
+        command: "_ConnectionCommand", exc: Exception | None = None
+    ) -> None:
+        if command.future.done():
+            return
+        if exc is None:
+            command.future.set_result(None)
+            return
+        command.future.set_exception(exc)
+
+    async def _connection_owner(self) -> None:
+        current_stack: AsyncExitStack | None = None
+        try:
+            while True:
+                command = await self._commands.get()
+                if isinstance(command, _ConnectCommand):
+                    try:
+                        new_stack, session, init_result = await self._open_connection(
+                            command.url, command.jwt
+                        )
+                    except Exception as exc:
+                        self._finish_command(command, exc)
+                        continue
+
+                    old_stack = current_stack
+                    current_stack = new_stack
+                    self._session = session
+                    self.server_name = init_result.serverInfo.name
+                    self.capabilities = init_result.capabilities
+
+                    if old_stack is not None:
+                        try:
+                            await self._close_stack(
+                                old_stack, "close previous connection stack"
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "Connected to replacement session but cleanup failed: %s",
+                                exc,
+                            )
+                            self._finish_command(command, exc)
+                            continue
+
+                    self._finish_command(command)
+                    log.info("Connected to remote MCP server: %s", self.server_name)
+                    continue
+
+                stack_to_close = current_stack
+                current_stack = None
+                self._session = None
+                self.capabilities = None
+
+                if stack_to_close is not None:
+                    try:
+                        await self._close_stack(
+                            stack_to_close, "close active connection stack"
+                        )
+                    except Exception as exc:
+                        self._finish_command(command, exc)
+                        break
+
+                self._finish_command(command)
+                break
+        finally:
+            if current_stack is not None:
+                try:
+                    await self._close_stack(
+                        current_stack, "close connection stack during owner shutdown"
+                    )
+                except Exception as exc:
+                    log.warning("Connection owner shutdown cleanup failed: %s", exc)
+            self._session = None
+            self.capabilities = None
+
+    def _ensure_owner_task(self) -> None:
+        if self._owner_task is not None and self._owner_task.done():
+            self._owner_task.result()
+            self._owner_task = None
+        if self._owner_task is None:
+            self._owner_task = asyncio.create_task(
+                self._connection_owner(),
+                name="nordstellar-proxy-connection-owner",
+            )
 
     async def connect(self, url: str, jwt: str) -> None:
-        # Do NOT call aclose() on the old stack here.
-        # streamablehttp_client uses anyio TaskGroups whose cancel scopes are
-        # task-owned. If connect() is called from a request-handler task (e.g.
-        # during re-auth), closing a stack that was created in the main task
-        # raises "Attempted to exit cancel scope in a different task than it was
-        # entered in". The old stack is orphaned and will time out naturally;
-        # close() (called from the main task's finally block) handles it safely.
-        stack = AsyncExitStack()
-        read, write, _ = await stack.enter_async_context(
-            streamablehttp_client(
-                url=url,
-                headers={"Authorization": f"Bearer {jwt}"},
-            )
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        init_result = await session.initialize()
-
-        self._session = session
-        self._stack = stack
-        self.server_name = init_result.serverInfo.name
-        self.capabilities = init_result.capabilities
-        log.info("Connected to remote MCP server: %s", self.server_name)
+        self._ensure_owner_task()
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        await self._commands.put(_ConnectCommand(url=url, jwt=jwt, future=future))
+        await future
 
     async def close(self) -> None:
-        # Safe to call aclose() here because close() is always invoked from
-        # the _run() coroutine (main task) — the same task that called connect()
-        # on startup.
-        if self._stack is not None:
-            await self._stack.aclose()
-            self._stack = None
-            self._session = None
+        if self._owner_task is None:
+            return
+
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        await self._commands.put(_CloseCommand(future=future))
+        await future
+        await self._owner_task
+        self._owner_task = None
 
     @property
     def session(self) -> ClientSession:
         if self._session is None:
             raise RuntimeError("Not connected to remote MCP server")
         return self._session
+
+
+@dataclass(slots=True)
+class _ConnectCommand:
+    url: str
+    jwt: str
+    future: asyncio.Future[None]
+
+
+@dataclass(slots=True)
+class _CloseCommand:
+    future: asyncio.Future[None]
+
+
+_ConnectionCommand = _ConnectCommand | _CloseCommand
 
 
 # ---------------------------------------------------------------------------
