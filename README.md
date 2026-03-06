@@ -1,48 +1,47 @@
-# nordstellar-remote-mcp-proxy
+# NordStellar MCP
 
-A lightweight Python proxy that handles NordStellar authentication and forwards MCP tool calls to a remote Go MCP server over StreamableHTTP.
+Connect any MCP-compatible AI assistant to NordStellar so you can query your platform data directly from chat.
 
-## How it works
+## What you get
 
-1. On first run, opens a browser window for NordStellar login (cookie-based OAuth flow)
-2. Extracts the JWT from the `AccessToken` cookie
-3. Proxies all MCP requests to the remote server using the JWT as a `Bearer` token
-4. Re-authenticates transparently when the token expires
+- Use natural language to ask about NordStellar data
+- No need to switch to the NordStellar UI or write GraphQL by hand
+- Secure login via your NordStellar account
 
-The remote Go server (`cmd/remote-hack`) accepts the Bearer token and converts it back into an `AccessToken` cookie for the NordStellar GraphQL backend.
+## Setup
 
-## Usage
+### 1. Add to your MCP client
 
-### Cursor `mcp.json` (recommended — no local clone needed)
+Add the NordStellar MCP server to your AI assistant’s MCP configuration (e.g. `mcp.json` or the equivalent in your client):
 
 ```json
 {
   "nordstellar-graphql": {
     "command": "uvx",
     "args": [
-      "--from", "git+https://github.com/sirakav/ns-mcp-prroxy",
+      "--from", "git+https://github.com/sirakav/ns-mcp-proxy",
       "nordstellar-remote-mcp-proxy",
-      "http://my-server:8080/mcp"
+      "http://your-server:8080/mcp"
     ]
   }
 }
 ```
 
-`uvx` installs and caches the package from GitHub on first run.
+Replace `http://your-server:8080/mcp` with the MCP endpoint URL provided by your NordStellar administrator.
 
-### Local run
+### 2. First-time login
 
-```bash
-uv run nordstellar_remote_mcp_proxy.py http://my-server:8080/mcp
-```
+When you first use NordStellar, a browser window will open. Sign in with your NordStellar credentials. After that, you’re set—the connection stays authenticated until you sign out or the session expires.
 
-Or after installing:
+### 3. Start using it
 
-```bash
-uvx --from . nordstellar-remote-mcp-proxy http://my-server:8080/mcp
-```
+Ask your AI assistant things like “What projects do I have?” or “Show me recent activity” and it will use your NordStellar data to answer.
 
 ## Requirements
 
-- Python ≥ 3.10
 - [uv](https://docs.astral.sh/uv/) installed (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- Python 3.10 or newer (uv handles this automatically)
+
+## Need help?
+
+Contact your NordStellar administrator for the correct MCP endpoint URL and any access questions.

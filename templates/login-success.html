@@ -93,9 +93,12 @@
     </svg>
   </div>
   <h1>Login successful</h1>
-  <p>You're now authenticated. You can close this tab and return to your terminal.</p>
+  <p>You're now authenticated. This window will close automatically.</p>
   <div class="tag">Authenticated</div>
 </div>
 <div class="footer">NordStellar &mdash; Threat Exposure Platform</div>
+<script>
+  setTimeout(function(){ window.close(); }, 2000);
+</script>
 </body>
 </html>
