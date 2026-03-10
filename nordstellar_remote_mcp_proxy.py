@@ -437,7 +437,14 @@ class AuthState:
     async def ensure_authenticated(self) -> None:
         """Refresh or run browser login, mirroring ensureAuthenticated in refresh.go."""
         if self.is_authenticated():
-            return
+            try:
+                jwt = self.extract_jwt()
+                exp = _jwt_exp(jwt)
+                if exp is not None and exp - time.time() > _REFRESH_SKEW_SECONDS:
+                    return
+                log.info("AccessToken expired or expiring soon.")
+            except Exception:
+                log.info("Could not validate stored token.")
         log.info("Attempting token refresh...")
         if await self._refresh_session():
             log.info("Token refreshed successfully.")
@@ -934,9 +941,18 @@ async def _run(url: str) -> None:
     conn = ConnectionManager()
     refresh_task: asyncio.Task[None] | None = None
     try:
-        await auth.ensure_authenticated()
-        jwt = auth.extract_jwt()
-        await conn.connect(url, jwt)
+        for attempt in range(2):
+            await auth.ensure_authenticated()
+            jwt = auth.extract_jwt()
+            try:
+                await conn.connect(url, jwt)
+                break
+            except Exception as exc:
+                if attempt == 0 and _is_auth_exception(exc):
+                    log.warning("Initial connection failed with auth error, re-authenticating...")
+                    auth.invalidate()
+                    continue
+                raise
 
         refresh_task = asyncio.create_task(
             _token_refresh_daemon(auth, conn, url),
