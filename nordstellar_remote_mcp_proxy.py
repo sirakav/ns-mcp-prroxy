@@ -38,8 +38,7 @@ from typing import Any, TypeVar
 import urllib.parse
 import webbrowser
 
-T = TypeVar("T")
-
+import anyio
 import httpx
 from jinja2 import Environment, FileSystemLoader
 import keyring
@@ -49,6 +48,8 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import McpError
+
+T = TypeVar("T")
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -570,8 +571,6 @@ class ConnectionManager:
                                 "Connected to replacement session but cleanup failed: %s",
                                 exc,
                             )
-                            self._finish_command(command, exc)
-                            continue
 
                     self._finish_command(command)
                     log.info("Connected to remote MCP server: %s", self.server_name)
@@ -736,6 +735,10 @@ def _is_auth_exception(exc: BaseException) -> bool:
         ("Not connected to remote MCP server",),
     ):
         return True
+    if isinstance(
+        exc, (anyio.ClosedResourceError, anyio.BrokenResourceError, anyio.EndOfStream)
+    ):
+        return True
     subs = getattr(exc, "exceptions", None)
     if subs is not None:
         return any(_is_auth_exception(sub) for sub in subs)
@@ -793,7 +796,9 @@ async def _create_proxy_server(
     if caps and caps.tools:
 
         async def _list_tools(_: Any) -> types.ServerResult:
-            return types.ServerResult(await _with_reauth(lambda: conn.session.list_tools()))
+            return types.ServerResult(
+                await _with_reauth(lambda: conn.session.list_tools())
+            )
 
         async def _call_tool(req: types.CallToolRequest) -> types.ServerResult:
             async def _do() -> types.CallToolResult:
@@ -807,12 +812,19 @@ async def _create_proxy_server(
             try:
                 return types.ServerResult(await _with_reauth(_do))
             except Exception as exc:  # noqa: BLE001
-                log.warning("call_tool(%s) failed: %s: %s", req.params.name, type(exc).__name__, exc)
+                log.warning(
+                    "call_tool(%s) failed: %s: %s",
+                    req.params.name,
+                    type(exc).__name__,
+                    exc,
+                )
                 # Forward the remote server's error message (e.g. blocked delete operations)
                 # instead of a generic message so the client sees the actual reason.
                 error_text = str(exc).strip()
                 if not error_text:
-                    error_text = "Tool call failed. Please try again or restart the MCP server."
+                    error_text = (
+                        "Tool call failed. Please try again or restart the MCP server."
+                    )
                 return types.ServerResult(
                     types.CallToolResult(
                         content=[
@@ -832,7 +844,9 @@ async def _create_proxy_server(
     if caps and caps.resources:
 
         async def _list_resources(_: Any) -> types.ServerResult:
-            return types.ServerResult(await _with_reauth(lambda: conn.session.list_resources()))
+            return types.ServerResult(
+                await _with_reauth(lambda: conn.session.list_resources())
+            )
 
         async def _list_resource_templates(_: Any) -> types.ServerResult:
             return types.ServerResult(
@@ -841,9 +855,7 @@ async def _create_proxy_server(
 
         async def _read_resource(req: types.ReadResourceRequest) -> types.ServerResult:
             return types.ServerResult(
-                await _with_reauth(
-                    lambda: conn.session.read_resource(req.params.uri)
-                )
+                await _with_reauth(lambda: conn.session.read_resource(req.params.uri))
             )
 
         app.request_handlers[types.ListResourcesRequest] = _list_resources
@@ -856,7 +868,9 @@ async def _create_proxy_server(
     if caps and caps.prompts:
 
         async def _list_prompts(_: Any) -> types.ServerResult:
-            return types.ServerResult(await _with_reauth(lambda: conn.session.list_prompts()))
+            return types.ServerResult(
+                await _with_reauth(lambda: conn.session.list_prompts())
+            )
 
         async def _get_prompt(req: types.GetPromptRequest) -> types.ServerResult:
             return types.ServerResult(
@@ -920,7 +934,9 @@ async def _token_refresh_daemon(
             if refreshed:
                 new_jwt = auth.extract_jwt()
                 await conn.connect(url, new_jwt)
-                log.info("Token refresh daemon: token refreshed and connection updated.")
+                log.info(
+                    "Token refresh daemon: token refreshed and connection updated."
+                )
             else:
                 log.warning(
                     "Token refresh daemon: refresh_session returned False "
@@ -952,7 +968,9 @@ async def _run(url: str) -> None:
                 break
             except Exception as exc:
                 if attempt == 0 and _is_auth_exception(exc):
-                    log.warning("Initial connection failed with auth error, re-authenticating...")
+                    log.warning(
+                        "Initial connection failed with auth error, re-authenticating..."
+                    )
                     auth.invalidate()
                     continue
                 raise
