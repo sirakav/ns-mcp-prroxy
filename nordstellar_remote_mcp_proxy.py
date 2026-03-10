@@ -518,7 +518,7 @@ class ConnectionManager:
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             init_result = await session.initialize()
-        except Exception:
+        except BaseException:
             await stack.aclose()
             raise
         return stack, session, init_result
@@ -545,12 +545,31 @@ class ConnectionManager:
         current_stack: AsyncExitStack | None = None
         try:
             while True:
-                command = await self._commands.get()
+                try:
+                    command = await self._commands.get()
+                except asyncio.CancelledError:
+                    # The streamablehttp_client's internal anyio TaskGroup may
+                    # cancel us when its SSE listener exits.  Exit cleanly so
+                    # _ensure_owner_task can create a fresh owner on the next
+                    # connect() call without logging a scary warning.
+                    log.debug(
+                        "Connection owner interrupted by cancel scope while idle"
+                    )
+                    break
+
                 if isinstance(command, _ConnectCommand):
                     try:
                         new_stack, session, init_result = await self._open_connection(
                             command.url, command.jwt
                         )
+                    except asyncio.CancelledError:
+                        self._finish_command(
+                            command,
+                            RuntimeError(
+                                "Connection cancelled by transport cancel scope"
+                            ),
+                        )
+                        break
                     except Exception as exc:
                         self._finish_command(command, exc)
                         continue
