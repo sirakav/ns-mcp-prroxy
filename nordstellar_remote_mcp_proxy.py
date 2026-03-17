@@ -777,14 +777,26 @@ async def _create_proxy_server(
     """
     caps = conn.capabilities
     app: server.Server = server.Server(name=conn.server_name)
+    _reauth_lock = asyncio.Lock()
 
     async def _reauth_and_reconnect() -> None:
-        log.info("Auth/session error detected — re-authenticating and reconnecting...")
-        auth.invalidate()
-        await auth.ensure_authenticated()
-        jwt = auth.extract_jwt()
-        await conn.connect(url, jwt)
-        log.info("Reconnected with refreshed token.")
+        async with _reauth_lock:
+            if auth.is_authenticated():
+                try:
+                    jwt = auth.extract_jwt()
+                    exp = _jwt_exp(jwt)
+                    if exp is not None and exp - time.time() > _REFRESH_SKEW_SECONDS:
+                        log.info("Skipping re-auth — token already refreshed by another handler.")
+                        return
+                except Exception:
+                    pass
+
+            log.info("Auth/session error detected — re-authenticating and reconnecting...")
+            auth.invalidate()
+            await auth.ensure_authenticated()
+            jwt = auth.extract_jwt()
+            await conn.connect(url, jwt)
+            log.info("Reconnected with refreshed token.")
 
     async def _with_reauth(coro_factory: "Callable[[], Awaitable[T]]") -> T:
         """
